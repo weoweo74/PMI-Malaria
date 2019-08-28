@@ -19,8 +19,303 @@ install.packages("plotfunctions")
 install.packages("sf")
 #devtools::install_github("r-spatial/mapview@develop")
 install.packages("DT")
+###############################################################pre-processing raster
+
+# script to process MAP obtained raster files
+pacman::p_load(raster, rgdal)
+
+# load in lookup for raster paths
+raster_lookup <- read.csv('data/raster_paths.csv',
+                          stringsAsFactors = FALSE)
+
+# read in a district raster
+districts <- raster('data/getRaster/FAO_admin_1.tif')
+
+raster_lookup$stats_path <- NA
+
+# loop through each available surface, and generate district level statistics
+for(i in 1:length(raster_lookup$path)){
+  
+  # get the path for the raster
+  raster_path <- raster_lookup$path[[i]]
+  
+  # if the path isn't blank, read in the raster and generate zonal statistics
+  if(raster_path != ""){
+    
+    # source raster
+    raster_i <- raster(raster_path)
+    raster_i[raster_i == -999] <- NA
+    raster_i[raster_i == -9999] <- NA
+    
+    # if it's the same continent process:
+    if(!is.null(intersect(extent(raster_i), extent(districts)))){
+      
+      # crop 'districts' by extent of raster_i
+      districts_c <- crop(districts, raster_i)
+      raster_i <- crop(raster_i, districts_c)
+      
+      # if the resolution of the two rasters isn't the same, resample the input raster to match the 5km district raster
+      if(ncol(raster_i) != ncol(districts_c)){
+        
+        raster_i <- resample(raster_i, districts_c, method = "bilinear")
+        
+      } else {
+        
+        extent(districts_c) <- extent(raster_i)
+        
+      }
+      
+      # generate statistics
+      raster_i_mean <- zonal(raster_i, districts_c, fun = 'mean', na.rm = TRUE)
+      raster_i_min <- zonal(raster_i, districts_c, fun = 'min', na.rm = TRUE)
+      raster_i_max <- zonal(raster_i, districts_c, fun = 'max', na.rm = TRUE)
+      raster_i_sd <- zonal(raster_i, districts_c, fun = "sd", na.rm = TRUE)
+      
+      # merge into one dataframe
+      raster_i_stats <- merge(raster_i_mean, raster_i_max, by = "zone")
+      raster_i_stats <- merge(raster_i_stats, raster_i_min, by = "zone")
+      raster_i_stats <- merge(raster_i_stats, raster_i_sd, by = "zone")
+      
+      # write out the merged dataframe
+      # define a file name
+      file_name_i <- substr(raster_path, 16, 1000)
+      file_name_i <- gsub("\\.tiff", "_stats.csv", file_name_i)
+      
+      write.csv(raster_i_stats,
+                file = paste0("data/processed/", file_name_i),
+                row.names = FALSE)
+      
+      # add the filepath back into the raster_lookup dataframe
+      raster_lookup$stats_path[i] <- paste0("data/processed/", file_name_i)
+    }
+  }
+}
+
+# write out the updated filepath document
+write.csv(raster_lookup,
+          'data/raster_stats_paths.csv',
+          row.names = FALSE)
+
+#########################################################look up generation
+# load required libraries
+pacman::p_load(raster, shiny, RColorBrewer, malariaAtlas, shinydashboard, rgdal, googledrive)
+##
+# load in shapefile
+admin0shapefile <- shapefile('data/countries/admin2013_0.shp')
+
+# download admin 0 raster
+# https://drive.google.com/open?id=1xY9meFKuR4UqJvc_LwayI11zupvbj5ZQ
+temp <- tempfile()
+dl <- drive_download(as_id("1xY9meFKuR4UqJvc_LwayI11zupvbj5ZQ"), path = temp, overwrite = TRUE)
+admin0raster <- raster(dl$local_path)
+
+# grab a list of available rasters from the MAP API
+raster_meta <- as.data.frame(listRaster())
+
+# subset to remove rows where title = "Relative Abundance Africa"
+raster_meta <- raster_meta[!raster_meta$title == "Relative Abundance Africa", ]
+
+# turn returned variable as a list to feed into sourcing function
+raster_name_list <- as.list(raster_meta$title)
+
+# feed list into getRaster function
+raster_list <- lapply(raster_name_list, getRaster)
+
+# stack the surfaces
+# error with surfaces due to differing extents
+# loop through and get a vector of raster extents
+# extents <- t(sapply(raster_list, function (x) as.vector(extent(x))))
+# 
+# get unique extents across all rasters
+# u_extents <- unique(extents)
+
+# loop through surfaces and generate info for each country; can't stack as there's 43 unique extents
+
+for(i in 1:length(raster_list)){
+  
+  # grab the raster for that iteration
+  r_i <- raster_list[[i]]
+  
+  # mask it by the extent of the admin 0 raster
+  r_i <- crop(r_i, admin0raster)
+  
+  # check number of columns match (cell size is equal)
+  logic_cell <- r_i@ncols == admin0raster@ncols
+  
+  # if the number of cells isn't equal, resample 
+  if(logic_cell == FALSE){
+    
+    message(paste0("Resampling raster ", i, " to align with master grid"))
+    
+    r_i <- resample(r_i, admin0raster, method = "bilinear")
+    
+  }
+  
+  # generate the mean pixel value for all pixels within a country
+  poly_mean <- zonal(r_i, admin0raster, fun = 'mean')
+  
+  # create a dataframe with the zonal output
+  poly_mean <- as.data.frame(poly_mean)
+  
+  names(poly_mean) <- c("country_id_raster",
+                        names(raster_list[[i]]))
+  
+  # convert to a binary surface indicating values for a country 
+  poly_mean[[2]] <- ifelse(is.na(poly_mean[[2]]), 0, 1)
+  
+  # combine results across each raster
+  if(i == 1){
+    
+    combined <- poly_mean
+    
+  } else {
+    
+    combined <- merge(combined, poly_mean, by = "country_id_raster")
+    
+  }
+  
+}
+
+# add back ISO code 
+iso3 <- as.data.frame(admin0shapefile[, c(1:2, 5)])
+
+names(combined)[1] <- "GAUL_CODE"
+combined <- merge(combined, iso3, by = "GAUL_CODE")
+# combined$COUNTRY_ID.x <- NULL
+# drop countries which are XXX
+combined_trim <- combined[!combined$COUNTRY_ID.y == "XXX", ]
+
+# write out combined dataset
+write.csv(combined,
+          'D:/Dropbox/PhD/collaboration projects/Wellcome Trust data re-use/SHINY-map-prize/data/combined_lookup.csv',
+          row.names = FALSE)
 
 
+#####################################################download raster
+# download-rasters.r
+# andy south March 2019
+
+# to download and save rasters for Africa from Malaria Atlas Project
+# doesn't need to be run by the shiny app, run beforehand to save data
+
+# needs packages declared in server.r
+
+# seemingly had to convert sf back to sp to get bbox in format wanted by getRaster
+extent_afr <- extent(c(-20,52), c(-38,38))
+extent_afr <- bbox(extent_afr)
+
+pfpr2_10_2015 <- getRaster(surface = "Plasmodium falciparum PR2-10", extent=extent_afr, year = 2015)
+pf_incidence_2015 <- getRaster(surface = "Plasmodium falciparum Incidence", extent=extent_afr, year = 2015)
+itn_2015 <- getRaster(surface = "Insecticide-treated bednet (ITN) coverage", extent=extent_afr, year = 2015)
+time_to_city_2015 <- getRaster(surface = "A global map of travel time to cities to assess inequalities in accessibility in 2015", extent=extent_afr)
+
+# could sample to reduce num pixels
+# because this is all that are displayed by leaflet anyway
+maxpixels <- 500000
+time_to_city_2015 <- raster::sampleRegular(time_to_city_2015, maxpixels, asRaster = TRUE, useGDAL = TRUE)
+
+#to make sure rasters are in memory
+pfpr2_10_2015 <- readAll(pfpr2_10_2015)
+pf_incidence_2015 <- readAll(pf_incidence_2015)
+itn_2015 <- readAll(itn_2015)
+time_to_city_2015 <- readAll(time_to_city_2015)
+
+save(pfpr2_10_2015, file='data/rasters/pfpr2_10_2015.rda')
+save(pf_incidence_2015, file='data/rasters/pf_incidence_2015.rda')
+save(itn_2015, file='data/rasters/itn_2015.rda')
+save(time_to_city_2015, file='data/rasters/time_to_city_2015.rda')
+
+###################################################admin-poly-simplify
+# admin-polys-simplify.r
+# andy south 2/3/2019
+
+# script to create faster admin polygons file for malaria atlas project shiny viewer
+
+# create one polygons object that has both admin0 and admin1 boundaries in it.
+# make district lookups simpler with consistent codes
+# save as an R object rather than a shapefile for faster loading
+# move to using package sf the modern replacement for sp that makes looking at polygon attributes easier.
+# simplify polygons so object is smaller and display is faster, country maps look cleaner (polygon detail not needed)
+
+
+# get iso country ids for africa from existing shapefile (then it may not be needed further)
+# this could be replaced by a different method
+library(raster)
+admin_1 <- raster::shapefile('data/districts/admin_1.shp')
+country_ids <- unique(admin_1$COUNTRY_ID)
+
+# get polygons for admin0 and admin1 from as a spatialpolygonsdataframe
+admin_0 <- raster::shapefile('data/countries/admin2013_0.shp')
+admin_0 <- admin_0[admin_0$COUNTRY_ID %in% country_ids, ]
+
+# convert to sf 
+library(sf)
+admin_1 <- admin_1[c(2:5, 1)]
+names(admin_1) <- c("COUNTRY_ID",
+                    "GAUL_CODE",
+                    "ADMN_LEVEL",
+                    "PARENT_ID",
+                    "name")
+combined <- rbind(admin_1, admin_0)
+sf_africa <- sf::st_as_sf(combined)
+
+# get rid of dodgy countrycodes
+sf_africa <- sf_africa[sf_africa$country_id != 'XXX',]
+# save as an R object that we can then read into the shiny app
+# save(sf_africa, file='test.rda')
+# then to plot the countries or districts just subset by admn_level
+# ad0ago <- sf_africa[sf_africa$admn_level==0 & sf_africa$country_id=='AGO',]
+# st_geometry needed to plot just the polygons
+# plot(sf::st_geometry(ad0ago))
+
+# sf_africa has spain in too !
+# plot(sf::st_geometry(sf_africa))
+
+#library(mapview)
+#mapview(sf_africa)
+
+#and has much more detail than we need e.g. fiddly islands.
+
+#remove spain
+sf_africa <- sf_africa[sf_africa$COUNTRY_ID!='ESP',]
+
+# simplify
+library(rmapshaper)
+#default keeps 0.05 of points keep=0.05
+#keep all polygons keep_shapes=TRUE
+sf_afr_simp <- rmapshaper::ms_simplify(sf_africa, keep_shapes=TRUE)
+
+save(sf_afr_simp, file='data/sf_afr_simp_fao.rda')
+
+# to load
+load('data/sf_afr_simp_fao.rda')
+
+library(mapview)
+mapview(sf_afr_simp, zcol='COUNTRY_ID', legend=FALSE)
+
+ggplot(sf_afr_simp) +
+  geom_sf(aes(fill=COUNTRY_ID))
+
+# subset by country and then plot coloured named districts
+
+#shorter name
+sfafsi <- sf_afr_simp
+
+#subset districts for one country
+sfago <- sfafsi[sfafsi$admn_level==1 & sfafsi$country_id=='AGO',]
+
+#datum=na needed to remove gridlines now, may not be in future
+
+ggplot(sfago) +
+  geom_sf(aes(fill=name)) + 
+  coord_sf(datum = NA) + 
+  theme_void()
+
+# if I wanted to add district labels
+ggplot(sfafsi) +
+  geom_sf() +
+  geom_text_repel(aes(x=X, y=Y, label=name))
+#############################################################################################
 #Create the ui functions for the dashboard
 
 #### load required libraries ####
