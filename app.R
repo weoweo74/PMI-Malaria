@@ -1,5 +1,6 @@
 
 ## app.R ##
+install.packages("sp")
 install.packages("rgdal", repos="http://R-Forge.R-project.org", type="source")
 install.packages("raster")
 install.packages("shiny")
