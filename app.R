@@ -1,6 +1,6 @@
 
 ## app.R ##
-
+install.packages("rgdal", repos="http://R-Forge.R-project.org", type="source")
 install.packages("raster")
 install.packages("shiny")
 install.packages("RColorBrewer")
