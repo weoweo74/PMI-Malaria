@@ -1,6 +1,24 @@
 
 ## app.R ##
 
+install.packages("raster")
+install.packages("shiny")
+install.packages("RColorBrewer")
+install.packages("malariaAtlas")
+install.packages("shinydashboard")
+install.packages("stringr")
+install.packages("shinyalert")
+install.packages("shinyBS")
+install.packages("shinythemes")
+install.packages("shinycssloaders")
+install.packages("shinyjs")
+install.packages("mapview")
+install.packages("leaflet")
+install.packages("kableExtra")
+install.packages("plotfunctions")
+install.packages("sf")
+#devtools::install_github("r-spatial/mapview@develop")
+install.packages("DT")
 
 
 #Create the ui functions for the dashboard
