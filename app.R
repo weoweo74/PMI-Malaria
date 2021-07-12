@@ -21,7 +21,7 @@ install.packages("sf")
 #devtools::install_github("r-spatial/mapview@develop")
 install.packages("DT")
 ###############################################################pre-processing raster
-## adding the "pacman" package from githug-devtools
+## adding the "pacman" package
 devtools::install_github("trinker/pacman")
 install.packages("pacman")
 library(pacman)
