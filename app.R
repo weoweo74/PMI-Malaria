@@ -981,7 +981,7 @@ function(input, output, session) {
     contentType = "text/html")
 }
 
-
+session$allowReconnect("force")
 
 #run/call the shiny app
 #shinyApp(ui, server)
